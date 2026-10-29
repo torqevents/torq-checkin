@@ -520,7 +520,7 @@ async function loadMe(session) {
   const { data } = await sb.from('team_profiles').select('id,name,email,role').eq('id', session.user.id).maybeSingle();
   if (!data) return null;
   let perms = null; const p = await sb.rpc('torq_my_perms'); if (!p.error) perms = p.data;
-  const canScan = perms ? !!perms['checkin.scan'] : true;
+  const canScan = perms && ('checkin.scan' in perms) ? !!perms['checkin.scan'] : true;
   return ME = { id: data.id, name: data.name || data.email, email: data.email, isAdmin: data.role === 'admin', canScan };
 }
 
