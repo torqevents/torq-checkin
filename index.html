@@ -135,6 +135,7 @@ select.inp{appearance:none;background-image:linear-gradient(45deg,transparent 50
 .park b{font-size:15.5px}
 .park .vip{border-color:color-mix(in srgb,var(--c) 45%,transparent);background:color-mix(in srgb,var(--c) 10%,var(--bg2))}
 .park .vip b{color:var(--c)}
+[id^=pd-]:empty{display:none}
 .pnote{padding:11px 13px;border-radius:14px;background:var(--amberbg);color:#ffd27a;font-size:14px;border:1px solid rgba(255,176,32,.25)}
 .pass-acts{display:grid;grid-template-columns:1fr 1fr;gap:8px}
 .tips{font-size:13px;color:var(--muted);text-align:center}
@@ -424,24 +425,35 @@ async function renderPasses(passes) {
   passes.forEach((p, i) => makeQR($(`#qr-${i}`), qrUrl(p.token)));
   $('#notme').onclick = () => { ls.del('torq-checkin-contact'); viewPublic(); };
   out.onclick = e => { const b = e.target.closest('[data-save]'); if (b) savePass(passes[+b.dataset.save], +b.dataset.save, scheds[passes[+b.dataset.save].event_id]); };
-  // live: flip to "Checked in" when staff scan it
+  // live: picks up check-in and any parking changes the TORQ team makes
+  const contact = ls.get('torq-checkin-contact');
   every(12000, async () => {
-    for (let i = 0; i < passes.length; i++) {
-      if (passes[i].checked_in_at) continue;
-      const { data } = await sb.rpc('checkin_pass_status', { p_token: passes[i].token });
-      if (data) { passes[i].checked_in_at = data; markPassDone(i, data); beep(true); }
-    }
+    if (!contact) return;
+    const { data } = await sb.rpc('checkin_get_pass', { p_contact: contact });
+    (data || []).forEach(n => {
+      const i = passes.findIndex(p => p.token === n.token); if (i < 0) return;
+      const o = passes[i];
+      if (n.checked_in_at && !o.checked_in_at) { markPassDone(i, n.checked_in_at); beep(true); }
+      if (['zone', 'spot', 'arrival', 'note', 'car_number'].some(k => (n[k] || '') !== (o[k] || ''))) {
+        const box = $(`#pd-${i}`); if (box) { box.innerHTML = passDetails(n, scheds[n.event_id]); box.animate([{ background: 'rgba(255,176,32,.18)' }, { background: 'transparent' }], { duration: 1600 }); }
+        if (!o._told) toast('Your pass was updated', 'ok'); o._told = true;
+      }
+      passes[i] = Object.assign(o, n, { _told: o._told });
+    });
   });
   scrollTo({ top: 0, behavior: 'smooth' });
 }
 
 function zoneColor(sched, name) { const z = (sched?.zones || []).find(z => z.name.toLowerCase() === String(name).toLowerCase()); return z?.color || '#ffb020'; }
 
-function passHTML(p, i, sched) {
+function passDetails(p, sched) {
   const park = [];
   if (p.zone) park.push(`<div class="vip" style="--c:${esc(zoneColor(sched, p.zone))}"><div class="lab">Parking</div><b>${esc(p.zone)}</b></div>`);
   if (p.spot) park.push(`<div><div class="lab">Spot</div><b>${esc(p.spot)}</b></div>`);
   if (p.arrival) park.push(`<div><div class="lab">Arrive</div><b>${esc(p.arrival)}</b></div>`);
+  return (park.length ? `<div class="park">${park.join('')}</div>` : '') + (p.note ? `<div class="pnote">${esc(p.note)}</div>` : '');
+}
+function passHTML(p, i, sched) {
   return `<article class="pass" style="animation-delay:${i * 120}ms" id="pass-${i}">
 <div class="pass-top"><img src="${LOGO}" alt="TORQ"><div class="kicker">Showcase<br>pass</div></div>
 <div class="pass-ev"><h2>${esc(p.event_name || 'TORQ Showcase')}</h2><p>${esc([p.event_date, p.event_location].filter(Boolean).join(' · '))}</p></div>
@@ -449,8 +461,7 @@ function passHTML(p, i, sched) {
 <div class="code">CODE ${esc(shortCode(p.token))}</div>
 <div class="perf"></div>
 <div class="pass-who"><div class="who-row"><div><div class="lab">Showcaser</div><b>${esc(p.first_name || 'Showcaser')}</b><div class="muted small">${esc(p.vehicle)}</div></div>${p.car_number ? `<div style="text-align:right"><div class="lab">Car</div><div class="carnum">#${p.car_number}</div></div>` : ''}</div>
-${park.length ? `<div class="park">${park.join('')}</div>` : ''}
-${p.note ? `<div class="pnote">${esc(p.note)}</div>` : ''}
+<div id="pd-${i}" style="display:grid;gap:14px;border-radius:14px">${passDetails(p, sched)}</div>
 <div class="who-row"><span class="pill ${p.checked_in_at ? 'ok' : 'wait'}" id="st-${i}">${p.checked_in_at ? I.check + ' Checked in ' + esc(fmtTime(p.checked_in_at)) : 'Ready to check in'}</span></div>
 <div class="pass-acts"><button class="btn" data-save="${i}">${I.dl} Save to photos</button><a class="btn" href="#sched-${esc(p.event_id)}">${I.cal} Schedule</a></div></div></article>`;
 }
@@ -683,7 +694,7 @@ async function resultSheet(r, state) {
   w.innerHTML = `<div class="sheet"><div class="res-photo" id="rph"><div class="ph">${I.car}</div><span class="res-status pill ${state === 'already' ? 'wait' : state === 'bad' ? '' : 'ok'}">${state === 'already' ? 'Already in' : state === 'bad' ? 'Not approved' : 'Approved'}</span></div>
 <div class="res-body"><div style="display:flex;justify-content:space-between;gap:10px;align-items:flex-start"><div style="min-width:0"><h2>${esc(r.full_name)}</h2><p class="muted">${esc(r.vehicle)}</p></div>${r.car_number ? `<div class="carnum">#${r.car_number}</div>` : ''}</div>
 ${r.plate ? `<div><span class="plate">${esc(r.plate)}</span></div>` : ''}
-${r.zone || r.spot || r.arrival ? `<div class="park">${r.zone ? `<div class="vip" style="--c:${esc(zoneColor(sched, r.zone))}"><div class="lab">Parking</div><b>${esc(r.zone)}</b></div>` : ''}${r.spot ? `<div><div class="lab">Spot</div><b>${esc(r.spot)}</b></div>` : ''}${r.arrival ? `<div><div class="lab">Arrival</div><b>${esc(r.arrival)}</b></div>` : ''}</div>` : ''}
+${r.zone || r.spot || r.arrival ? `<div class="park">${r.zone ? `<div class="vip" style="--c:${esc(zoneColor(sched, r.zone))}"><div class="lab">Parking${r.paid ? ' · Paid' : ''}</div><b>${esc(r.zone)}</b></div>` : ''}${r.spot ? `<div><div class="lab">Spot</div><b>${esc(r.spot)}</b></div>` : ''}${r.arrival ? `<div><div class="lab">Arrival</div><b>${esc(r.arrival)}</b></div>` : ''}</div>` : ''}
 ${r.note ? `<div class="pnote">${esc(r.note)}</div>` : ''}
 <div class="kv"><div><span>Phone</span><b>${esc(r.phone || '–')}</b></div><div><span>Instagram</span><b>${esc(r.social || '–')}</b></div>${r.club ? `<div style="grid-column:1/-1"><span>Club</span><b>${esc(r.club)}</b></div>` : ''}</div>
 ${banner}
@@ -736,7 +747,7 @@ function renderCars(quiet) {
 <div class="filters">${[['all', 'All'], ['wait', 'Not here yet'], ['in', 'Checked in']].map(([k, l]) => `<button class="chip ${CARS_F === k ? 'on' : ''}" data-f="${k}">${l}</button>`).join('')}${zones.map(z => `<button class="chip ${CARS_Z === z ? 'on' : ''}" data-z="${esc(z)}">${esc(z)}</button>`).join('')}</div></div>
 <div class="rows" style="margin-top:12px">${rows.length ? rows.map((r, i) => `<div class="row ${r.checked_in_at ? 'in' : ''}" style="--i:${quiet ? 0 : i}"><span class="num">${r.car_number ? '#' + r.car_number : '–'}</span>
 <div style="min-width:0"><b>${esc(r.full_name)}</b><div class="meta">${esc([r.vehicle, r.plate].filter(Boolean).join(' · '))}</div>
-<div class="tags">${r.zone ? `<span class="zone" style="--c:${esc(zoneColor(sched, r.zone))}">${esc(r.zone)}${r.spot ? ' · ' + esc(r.spot) : ''}</span>` : ''}${r.arrival ? `<span class="pill">${esc(r.arrival)}</span>` : ''}${r.checked_in_at ? `<span class="pill ok">${I.check} ${esc(fmtTime(r.checked_in_at))}${r.checked_in_by_name ? ' · ' + esc(r.checked_in_by_name.split(' ')[0]) : ''}</span>` : ''}</div></div>
+<div class="tags">${r.zone ? `<span class="zone" style="--c:${esc(zoneColor(sched, r.zone))}">${esc(r.zone)}${r.spot ? ' · ' + esc(r.spot) : ''}</span>` : ''}${r.paid ? '<span class="pill ok">Paid</span>' : ''}${r.arrival ? `<span class="pill">${esc(r.arrival)}</span>` : ''}${r.checked_in_at ? `<span class="pill ok">${I.check} ${esc(fmtTime(r.checked_in_at))}${r.checked_in_by_name ? ' · ' + esc(r.checked_in_by_name.split(' ')[0]) : ''}</span>` : ''}</div></div>
 <div class="acts">${ME.isAdmin ? `<button class="btn sm" data-park="${r.token}">${I.pin} Parking</button>` : ''}${r.checked_in_at ? `<button class="btn sm" data-undo="${r.token}">${I.undo} Undo</button>` : `<button class="btn sm go" data-in="${r.token}">${I.check} Check in</button>`}</div></div>`).join('')
     : `<div class="empty">${LIST.length ? 'No cars match.' : 'No approved cars for this event yet.'}</div>`}</div>`;
   const cq = $('#cq'); cq.oninput = () => { CARS_Q = cq.value; const p = cq.selectionStart; renderCars(true); const n = $('#cq'); n.focus(); n.setSelectionRange(p, p); };
@@ -759,6 +770,7 @@ function parkingSheet(r, after) {
 <label class="fld"><span>Parking zone</span><select class="inp" id="pz"><option value="">None</option>${zones.map(z => `<option ${z.name === r.zone ? 'selected' : ''}>${esc(z.name)}</option>`).join('')}${r.zone && !zones.some(z => z.name === r.zone) ? `<option selected>${esc(r.zone)}</option>` : ''}</select></label>
 <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px"><label class="fld"><span>Spot</span><input class="inp" id="ps" maxlength="20" value="${esc(r.spot || '')}" placeholder="e.g. A3"></label>
 <label class="fld"><span>Arrival time</span><input class="inp" id="pa" maxlength="40" value="${esc(r.arrival || '')}" placeholder="e.g. 10:00–10:15 AM"></label></div>
+<label class="check" style="height:auto;margin:-2px 0 12px;color:var(--text);font-size:14px"><input type="checkbox" id="pp" ${r.paid ? 'checked' : ''}> Paid for VIP parking</label>
 <label class="fld"><span>Note to the showcaser</span><textarea class="inp" id="pn" maxlength="300" placeholder="e.g. Enter through Gate B">${esc(r.note || '')}</textarea></label>
 <div class="err" id="perr"></div><div style="display:flex;gap:8px;justify-content:flex-end"><button type="button" class="btn ghost" id="pc">Cancel</button><button class="btn primary" id="psave">Save</button></div></form>`;
   document.body.appendChild(w);
@@ -766,7 +778,7 @@ function parkingSheet(r, after) {
   $('#pc', w).onclick = close; w.onclick = e => { if (e.target === w) close(); };
   $('#pf', w).onsubmit = async e => {
     e.preventDefault(); $('#psave', w).disabled = true;
-    const { error } = await sb.rpc('checkin_set_details', { p_token: r.token, p_zone: $('#pz', w).value, p_spot: $('#ps', w).value.trim(), p_arrival: $('#pa', w).value.trim(), p_note: $('#pn', w).value.trim() });
+    const { error } = await sb.rpc('checkin_set_details', { p_token: r.token, p_zone: $('#pz', w).value, p_spot: $('#ps', w).value.trim(), p_arrival: $('#pa', w).value.trim(), p_note: $('#pn', w).value.trim(), p_paid: $('#pp', w).checked });
     if (error) { $('#perr', w).textContent = /not_allowed/.test(error.message) ? 'Only admins can change parking.' : "Couldn't save. Try again."; $('#perr', w).classList.add('show'); $('#psave', w).disabled = false; return; }
     toast('Parking saved', 'ok'); close(); await refreshList(); if (TAB === 'cars') renderCars(true);
   };
