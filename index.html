@@ -117,10 +117,10 @@ select.inp{appearance:none;background-image:linear-gradient(45deg,transparent 50
 .pass-ev p{color:var(--muted);font-size:13.5px;margin-top:3px}
 .qrbox{position:relative;margin:18px auto 0;width:min(270px,74%);aspect-ratio:1;padding:14px;border-radius:20px;background:#fff;display:grid;place-items:center;transition:filter .4s}
 .qrbox canvas,.qrbox img{width:100%!important;height:100%!important;image-rendering:pixelated}
-.qrbox .done{position:absolute;inset:0;border-radius:20px;display:grid;place-items:center;align-content:center;gap:6px;background:rgba(6,40,26,.9);color:var(--green);font:700 18px var(--display);text-transform:uppercase;letter-spacing:.04em;animation:pop .45s var(--spring)}
-.qrbox .done span.ck{width:72px;height:72px;border-radius:50%;background:var(--green);color:#03150d;display:grid;place-items:center;animation:pulse 1.6s 2}
-.qrbox .done span.ck svg{width:40px;height:40px}
-.code{text-align:center;font:600 13px var(--mono);letter-spacing:.2em;color:var(--dim);margin-top:10px}
+.qrbox .done{position:absolute;left:50%;bottom:-16px;transform:translateX(-50%);white-space:nowrap;border-radius:999px;display:flex;align-items:center;gap:8px;padding:8px 16px 8px 8px;background:#0f2b20;border:1px solid rgba(46,229,157,.4);box-shadow:0 8px 20px -6px rgba(0,0,0,.7);color:var(--green);font:700 14px var(--display);text-transform:uppercase;letter-spacing:.04em;animation:pop .45s var(--spring)}
+.qrbox .done span.ck{width:30px;height:30px;border-radius:50%;background:var(--green);color:#03150d;display:grid;place-items:center;animation:pulse 1.6s 2}
+.qrbox .done span.ck svg{width:18px;height:18px}
+.code{text-align:center;font:600 13px var(--mono);letter-spacing:.2em;color:var(--dim);margin-top:26px}
 .perf{position:relative;height:28px;margin:12px 0 0}
 .perf::before{content:"";position:absolute;left:22px;right:22px;top:50%;border-top:2px dashed var(--line2)}
 .perf::after{content:"";position:absolute;inset:0;background:radial-gradient(circle at 0 50%,var(--bg) 13px,transparent 14px),radial-gradient(circle at 100% 50%,var(--bg) 13px,transparent 14px)}
@@ -615,14 +615,24 @@ async function startCamera() {
     const v = $('#vid'); v.srcObject = stream; await v.play();
     off.classList.add('hidden'); $('#hint').classList.remove('hidden'); ls.set('torq-checkin-cam', '1');
     const c = document.createElement('canvas'), x = c.getContext('2d', { willReadFrequently: true });
-    let t0 = 0;
-    const tick = t => {
+    // Native scanner (Android Chrome, newer Safari) is fastest; jsQR is the fallback everywhere else.
+    let det = null;
+    try { if ('BarcodeDetector' in window && (await BarcodeDetector.getSupportedFormats()).includes('qr_code')) det = new BarcodeDetector({ formats: ['qr_code'] }); } catch { }
+    let t0 = 0, n = 0, busyFrame = false;
+    const found = data => { if (!data || scanBusy) return; const now = Date.now(); if (data === lastCode && now - lastAt < 3000) return; lastCode = data; lastAt = now; onScan(data); };
+    const tick = async t => {
       raf = requestAnimationFrame(tick);
-      if (scanBusy || t - t0 < 120 || v.readyState < 2) return; t0 = t;
-      const s = Math.min(1, 720 / Math.max(v.videoWidth, v.videoHeight)); c.width = v.videoWidth * s; c.height = v.videoHeight * s;
-      x.drawImage(v, 0, 0, c.width, c.height);
-      const r = window.jsQR(x.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: 'dontInvert' });
-      if (r && r.data) { const now = Date.now(); if (r.data === lastCode && now - lastAt < 10000) return; lastCode = r.data; lastAt = now; onScan(r.data); }
+      if (scanBusy || busyFrame || t - t0 < 100 || v.readyState < 2 || !v.videoWidth) return; t0 = t; busyFrame = true;
+      try {
+        if (det) { const codes = await det.detect(v); if (codes.length) return found(codes[0].rawValue); }
+        const vw = v.videoWidth, vh = v.videoHeight; let sx = 0, sy = 0, sw = vw, sh = vh;
+        // alternate: centre of the picture at full detail (small / far-away codes), then the whole picture
+        if (n++ % 2 === 0) { const side = Math.min(vw, vh) * 0.75; sx = (vw - side) / 2; sy = (vh - side) / 2; sw = sh = side; }
+        const s = Math.min(1, 800 / Math.max(sw, sh)); c.width = Math.round(sw * s); c.height = Math.round(sh * s);
+        x.drawImage(v, sx, sy, sw, sh, 0, 0, c.width, c.height);
+        const r = window.jsQR(x.getImageData(0, 0, c.width, c.height).data, c.width, c.height, { inversionAttempts: 'attemptBoth' });
+        if (r) found(r.data);
+      } catch (e) { console.warn(e); } finally { busyFrame = false; }
     };
     raf = requestAnimationFrame(tick);
   } catch (e) {
@@ -682,7 +692,7 @@ ${state === 'already' ? `<button class="btn" id="undo">${I.undo} Undo check-in</
 ${ME.isAdmin && state !== 'bad' ? `<button class="btn" id="park">${I.pin} Parking & notes</button>` : ''}
 <button class="btn ghost" id="close">${state === 'ready' ? 'Cancel' : 'Scan next'}</button></div></div></div>`;
   document.body.appendChild(w);
-  const close = () => { w.remove(); scanBusy = false; };
+  const close = () => { w.remove(); scanBusy = false; lastAt = Date.now(); };
   w.onclick = e => { if (e.target === w) close(); };
   $('#close', w).onclick = close;
   $('#doin', w)?.addEventListener('click', () => { w.remove(); doCheckIn(r); });
@@ -705,7 +715,7 @@ async function doCheckIn(r, fromAuto) {
 ${r.zone || r.spot ? `<span class="zone" style="--c:${esc(zoneColor(sched, r.zone))};height:38px;font-size:16px;padding:0 16px">${esc([r.zone, r.spot && 'Spot ' + r.spot].filter(Boolean).join(' · '))}</span>` : ''}
 ${r.note ? `<div class="pnote" style="text-align:left">${esc(r.note)}</div>` : ''}<button class="btn primary big" id="next" style="margin-top:6px">${I.cam} Scan next</button></div></div>`;
   document.body.appendChild(w);
-  const close = () => { w.remove(); scanBusy = false; };
+  const close = () => { w.remove(); scanBusy = false; lastAt = Date.now(); };
   $('#next', w).onclick = close; w.onclick = e => { if (e.target === w) close(); };
   setTimeout(() => { if (w.isConnected) close(); }, fromAuto ? 2200 : 3500);
   refreshList();
